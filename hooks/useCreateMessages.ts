@@ -33,6 +33,19 @@ export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn =
         }
     }, [projectId]);
 
+    const pollForResponse = useCallback(async () => {
+        for (let i = 0; i < 15; i++) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            await loadMessages();
+            const msgs = await (await fetch(`/api/messages${projectId ? `?projectId=${projectId}` : ""}`)).json();
+            if (msgs.messages && msgs.messages.length > messages.length) {
+                setMessages(msgs.messages);
+                return true;
+            }
+        }
+        return false;
+    }, [loadMessages, messages.length, projectId]);
+
     const mutateAsync = useCallback(async (content: string) => {
         setIsPending(true);
         
@@ -61,9 +74,18 @@ export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn =
                 throw new Error(data.error || "Failed to send message");
             }
 
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            await loadMessages();
+            const hasResponse = await pollForResponse();
+            
+            if (!hasResponse) {
+                const timeoutMsg: MessageData = {
+                    _id: `timeout-${Date.now()}`,
+                    role: "assistant",
+                    content: "⏳ Request is taking longer than expected. Please check again in a moment.",
+                    type: "TEXT",
+                    createdAt: new Date().toISOString(),
+                };
+                setMessages(prev => [...prev, timeoutMsg]);
+            }
             
         } catch (error: unknown) {
             const errorMsg = error instanceof Error ? error.message : "Failed to process request";
@@ -79,7 +101,7 @@ export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn =
         } finally {
             setIsPending(false);
         }
-    }, [projectId, loadMessages]);
+    }, [projectId, pollForResponse]);
 
     return { mutateAsync, isPending, messages, loadMessages };
 };

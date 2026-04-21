@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import TextAreaAutosize from "react-textarea-autosize";
-import { ArrowUpIcon, Loader2Icon, CheckCircle2Icon, XCircleIcon } from "lucide-react";
+import { ArrowUpIcon, Loader2Icon, CheckCircle2Icon, XCircleIcon, ClockIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -24,6 +24,8 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
 
     const { mutateAsync, isPending, messages, loadMessages } = useCreateMessages(projectId);
 
+    console.log("ChatPanel state:", { isPending, messagesCount: messages.length });
+
     useEffect(() => {
         loadMessages();
     }, [loadMessages]);
@@ -32,24 +34,18 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    useEffect(() => {
-        if (isPending) {
-            const interval = setInterval(() => {
-                loadMessages();
-            }, 2000);
-            return () => clearInterval(interval);
-        }
-    }, [isPending, loadMessages]);
-
     const isError = (msg: Message) => {
-        return msg.type === "ERROR" || msg.content.startsWith("❌") || msg.content.startsWith("⏳") || msg.content.toLowerCase().includes("error");
+        return msg.type === "ERROR" || msg.content.startsWith("❌");
+    };
+
+    const isWaiting = (msg: Message) => {
+        return msg.content.startsWith("⏳") || msg.content.includes("Taking longer");
     };
 
     const isBookingConfirmation = (content: string) => {
-        return content.includes("Booking Confirmed") || 
-               content.includes("🎉") || 
-               content.includes("Confirmed") ||
-               content.includes("Booked");
+        return content.includes("✅") || 
+               content.includes("Booked") ||
+               content.includes("Confirmed");
     };
 
     const renderMessage = (msg: Message) => {
@@ -57,7 +53,16 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
             return (
                 <div className="flex items-start gap-2">
                     <XCircleIcon className="size-5 text-red-500 mt-0.5 shrink-0" />
-                    <span className="text-red-600 dark:text-red-400">{msg.content}</span>
+                    <span className="text-red-600">{msg.content}</span>
+                </div>
+            );
+        }
+
+        if (isWaiting(msg)) {
+            return (
+                <div className="flex items-start gap-2">
+                    <ClockIcon className="size-5 text-yellow-500 mt-0.5 shrink-0" />
+                    <span className="text-yellow-600">{msg.content}</span>
                 </div>
             );
         }
@@ -66,15 +71,7 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
             return (
                 <div className="flex items-start gap-2">
                     <CheckCircle2Icon className="size-5 text-green-500 mt-0.5 shrink-0" />
-                    <div 
-                        className="prose prose-sm dark:prose-invert max-w-none"
-                        dangerouslySetInnerHTML={{ 
-                            __html: msg.content
-                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                .replace(/\|/g, '<br/>')
-                                .replace(/\n/g, '<br/>') 
-                        }} 
-                    />
+                    <span className="text-green-600 font-medium">{msg.content}</span>
                 </div>
             );
         }
@@ -84,7 +81,7 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
 
     const onSubmit = async () => {
         if (!content.trim() || isPending) return;
-
+        console.log("Submitting:", content);
         const currentContent = content;
         setContent("");
 
@@ -109,15 +106,10 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
                 {messages.length === 0 && !isPending && (
                     <div className="text-center text-muted-foreground py-8">
                         <p className="text-sm">👋 Hi! I can help you book a meeting room.</p>
-                        <p className="text-xs mt-2">Just tell me:</p>
-                        <ul className="text-xs mt-1 space-y-1">
-                            <li>• Which room you want (e.g., 101, 102)</li>
-                            <li>• What date (e.g., tomorrow, next Monday)</li>
-                            <li>• What time (e.g., 2pm, 10am)</li>
-                            <li>• Meeting title (e.g., Team standup)</li>
-                        </ul>
+                        <p className="text-xs mt-2">Try: "Book room 101 tomorrow at 2pm"</p>
                     </div>
                 )}
+                
                 {messages.map((msg) => (
                     <div
                         key={msg._id || msg.createdAt}
@@ -132,7 +124,7 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
                                 msg.role === "user"
                                     ? "bg-primary text-primary-foreground"
                                     : isError(msg)
-                                        ? "bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800"
+                                        ? "bg-red-50 border border-red-200"
                                         : "bg-muted"
                             )}
                         >
@@ -140,22 +132,22 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
                         </div>
                     </div>
                 ))}
+                
                 {isPending && (
                     <div className="flex justify-start">
-                        <div className="bg-muted rounded-lg px-4 py-3 text-sm">
-                            <div className="flex items-center gap-2 text-muted-foreground">
-                                <Loader2Icon className="size-4 animate-spin" />
-                                <span>Thinking...</span>
-                            </div>
+                        <div className="bg-muted rounded-lg px-4 py-3 text-sm flex items-center gap-2">
+                            <Loader2Icon className="size-4 animate-spin" />
+                            <span className="text-muted-foreground">Processing...</span>
                         </div>
                     </div>
                 )}
+                
                 <div ref={messagesEndRef} />
             </div>
 
             <div
                 className={cn(
-                    "relative border p-4 pt-1 rounded-xl bg-sidebar dark:bg-sidebar transition-all mx-4 mb-4",
+                    "relative border p-4 pt-1 rounded-xl bg-sidebar transition-all mx-4 mb-4",
                     isFocused && "shadow-xs"
                 )}
             >
@@ -178,9 +170,9 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
                 <div className="flex gap-x-2 items-end justify-between pt-2">
                     <div className="text-[10px] text-muted-foreground font-mono">
                         <kbd className="pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                            <span>&#8984;</span>Enter
+                            <span>⌘</span>Enter
                         </kbd>
-                        &nbsp;to submit
+                        &nbsp;to send
                     </div>
 
                     <Button
