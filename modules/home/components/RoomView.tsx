@@ -53,7 +53,7 @@ export const RoomView = () => {
                 return (
                     <div
                         key={room._id}
-                        className={`group min-h-[80px] relative flex flex-col items-center justify-center rounded-lg font-medium text-white ${
+                        className={`group min-h-20 relative flex flex-col items-center justify-center rounded-lg font-medium text-white ${
                             bookedAny
                                 ? "bg-red-500"
                                 : "bg-green-500"
