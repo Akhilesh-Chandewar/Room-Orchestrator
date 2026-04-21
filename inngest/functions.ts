@@ -1,174 +1,252 @@
 import { inngest } from "./client";
-import { gemini, createAgent, createTool, createNetwork } from "@inngest/agent-kit";
+import OpenAI from "openai";
 import mongoose from "mongoose";
-import { z } from "zod";
 import connectToDatabase from "@/lib/database";
 import { Room } from "@/modules/room/models/room";
 import { TimeSlot } from "@/modules/booking/models/timeSlot";
 import { Booking } from "@/modules/booking/models/booking";
+import { Message } from "@/modules/messages/models/message";
 
-const ROOM_BOOKING_PROMPT = `You are a room booking assistant. Your job is to help users book meeting rooms through natural conversation.
+const responseCache = new Map<string, { data: string; timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000;
 
-Available information:
-- You have access to room data including room numbers, capacities, and availability
-- Users can book rooms for specific dates and time slots
-- Time slots are: 9:00 AM – 10:00 AM, 10:00 AM – 11:00 AM, 11:00 AM – 12:00 PM, 12:00 PM – 1:00 PM, 1:00 PM – 2:00 PM, 2:00 PM – 3:00 PM, 3:00 PM – 4:00 PM, 4:00 PM – 5:00 PM
+function isQuotaError(error: unknown): boolean {
+    if (!error) return false;
+    const errorStr = JSON.stringify(error);
+    return (
+        errorStr.includes("429") ||
+        errorStr.includes("rate_limit") ||
+        errorStr.includes("Rate limit") ||
+        errorStr.includes("quota") ||
+        errorStr.includes("insufficient_quota")
+    );
+}
 
-When handling booking requests:
-1. Extract the room number, date, time slot, and meeting title from the user's message
-2. Use the available tools to check room availability and create bookings
-3. Confirm the booking with the user, including all details
+async function retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelay: number = 5000
+): Promise<T> {
+    let lastError: unknown;
 
-If the user provides incomplete information:
-- Ask for the missing details (room number, date, time slot, or meeting title)
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (error: unknown) {
+            lastError = error;
 
-Always respond in a friendly, helpful manner. Format your response clearly with booking confirmation details.`;
+            if (isQuotaError(error)) {
+                const delay = baseDelay * Math.pow(2, attempt);
+                console.log(`Rate limit, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    throw lastError;
+}
+
+const openrouter = new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: process.env.OPENROUTER_API_KEY || "",
+    defaultHeaders: {
+        "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+        "X-Title": "Room Orchestrator",
+    },
+});
+
+const SYSTEM_PROMPT = `You are a friendly room booking assistant. Help users book meeting rooms.
+
+AVAILABLE ROOMS (use these exact room numbers): 101, 102, 103, 104, 105, 201, 202, 203, 301, 302
+Each room has capacity of 8-20 people.
+
+TIME SLOTS:
+- 9:00 AM – 10:00 AM (slot 1)
+- 10:00 AM – 11:00 AM (slot 2)
+- 11:00 AM – 12:00 PM (slot 3)
+- 12:00 PM – 1:00 PM (slot 4)
+- 1:00 PM – 2:00 PM (slot 5)
+- 2:00 PM – 3:00 PM (slot 6)
+- 3:00 PM – 4:00 PM (slot 7)
+- 4:00 PM – 5:00 PM (slot 8)
+
+RULES:
+1. Extract: room number, date, time slot number (1-8), meeting title
+2. If missing info, ask ONE question at a time
+3. When you have all info, respond with EXACTLY this format:
+
+BOOKING_REQUEST:
+{
+  "roomNumber": "XXX",
+  "date": "YYYY-MM-DD",
+  "slot": N,
+  "title": "Meeting title"
+}
+
+Example: "Book room 101 tomorrow at 2pm for team standup"
+→ Room: 101, Date: tomorrow's date, Slot: 6 (2pm is slot 6), Title: team standup
+
+If there's an error or user wants to cancel, respond with regular text (no BOOKING_REQUEST).`;
 
 export const roomOrchestrator = inngest.createFunction(
     { id: "room-orchestrator", triggers: { event: "app/room.created" } },
     async ({ event, step }) => {
         await connectToDatabase();
 
-        const { message, projectId } = event.data;
+        const { message: userMessage, projectId } = event.data;
 
-        const getRooms = createTool({
-            name: "getRooms",
-            description: "Get all available rooms with their details",
-            parameters: z.object({}),
-            handler: async () => {
-                const rooms = await Room.find({ isActive: true }).sort({ roomNumber: 1 });
-                return rooms.map(r => ({
-                    id: r._id.toString(),
-                    roomNumber: r.roomNumber,
-                    capacity: r.capacity
-                }));
-            }
+        const cacheKey = JSON.stringify({ message: userMessage, projectId });
+        const cached = responseCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+            console.log("Returning cached response");
+            return { success: true, message: cached.data, projectId, cached: true };
+        }
+
+        await step.run("save-user-message", async () => {
+            await Message.create({
+                content: userMessage,
+                role: "user",
+                type: "TEXT",
+                projectId: projectId ? new mongoose.Types.ObjectId(projectId) : undefined,
+            });
         });
 
-        const getTimeSlots = createTool({
-            name: "getTimeSlots",
-            description: "Get all available time slots",
-            parameters: z.object({}),
-            handler: async () => {
-                const slots = await TimeSlot.find({ isActive: true }).sort({ startMinutes: 1 });
-                return slots.map(s => ({
-                    id: s._id.toString(),
-                    label: s.label,
-                    startTime: s.startTime,
-                    endTime: s.endTime
-                }));
+        const previousMessages = await step.run("get-previous-messages", async () => {
+            const query: any = {};
+            if (projectId) {
+                query.projectId = new mongoose.Types.ObjectId(projectId);
             }
+            
+            const messages = await Message.find(query)
+                .sort({ createdAt: -1 })
+                .limit(4)
+                .lean();
+            
+            return messages.reverse().map(m => `${m.role}: ${m.content}`).join("\n");
         });
 
-        const checkAvailability = createTool({
-            name: "checkAvailability",
-            description: "Check if a room is available for a specific date and time slot",
-            parameters: z.object({
-                roomId: z.string(),
-                dateString: z.string(),
-                slotId: z.string().optional()
-            }),
-            handler: async ({ roomId, dateString, slotId }) => {
-                const query: any = {
-                    roomId: new mongoose.Types.ObjectId(roomId),
-                    dateString,
-                    status: "CONFIRMED"
-                };
-                
-                if (slotId) {
-                    query.slotId = new mongoose.Types.ObjectId(slotId);
-                }
-                
-                const bookings = await Booking.find(query);
-                return { available: bookings.length === 0, bookingsCount: bookings.length };
-            }
+        const rooms = await step.run("get-rooms", async () => {
+            return await Room.find({ isActive: true }).sort({ roomNumber: 1 });
         });
 
-        const createBookingTool = createTool({
-            name: "createBooking",
-            description: "Create a room booking",
-            parameters: z.object({
-                roomId: z.string(),
-                slotId: z.string(),
-                date: z.string(),
-                title: z.string(),
-                notes: z.string().optional()
-            }),
-            handler: async ({ roomId, slotId, date, title, notes }) => {
-                const room = await Room.findById(roomId);
-                const slot = await TimeSlot.findById(slotId);
-                
-                if (!room || !slot) {
-                    throw new Error("Room or time slot not found");
-                }
+        const timeSlots = await step.run("get-timeslots", async () => {
+            return await TimeSlot.find({ isActive: true }).sort({ startMinutes: 1 });
+        });
 
-                const existingBooking = await Booking.findOne({
-                    roomId: new mongoose.Types.ObjectId(roomId),
-                    slotId: new mongoose.Types.ObjectId(slotId),
-                    dateString: date,
-                    status: "CONFIRMED"
+        const roomList = rooms.map((r: any) => `${r.roomNumber} (capacity: ${r.capacity})`).join(", ");
+        const slotList = timeSlots.map((s: any, i: number) => `${i + 1}: ${s.label}`).join(", ");
+
+        const prompt = `Available rooms: ${roomList}
+Available time slots: ${slotList}
+
+Conversation so far:
+${previousMessages}
+
+User: ${userMessage}
+
+${SYSTEM_PROMPT}`;
+
+        let responseText = "";
+
+        try {
+            responseText = await retryWithBackoff(async () => {
+                const completion = await openrouter.chat.completions.create({
+                    model: "mistralai/mistral-7b-instruct",
+                    messages: [{ role: "user", content: prompt }],
+                    temperature: 0.7,
                 });
+                return completion.choices[0]?.message?.content || "No response";
+            });
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : "API error";
+            console.error("OpenRouter API error:", errorMessage);
+            
+            if (isQuotaError(error)) {
+                responseText = "⏳ I'm experiencing high demand right now. Please wait a moment and try again.";
+            } else {
+                responseText = `❌ Error: ${errorMessage}. Please try again.`;
+            }
+        }
 
-                if (existingBooking) {
-                    throw new Error("This slot is already booked");
-                }
+        const bookingMatch = responseText.match(/BOOKING_REQUEST:\s*({[\s\S]*?})/);
+        
+        if (bookingMatch) {
+            try {
+                const bookingData = JSON.parse(bookingMatch[1]);
+                const { roomNumber, date, slot, title } = bookingData;
 
-                const booking = await Booking.create({
-                    userId: new mongoose.Types.ObjectId(),
-                    roomId: new mongoose.Types.ObjectId(roomId),
-                    slotId: new mongoose.Types.ObjectId(slotId),
-                    date: new Date(date),
-                    dateString: date,
-                    title,
-                    notes,
-                    status: "CONFIRMED",
-                    snapshot: {
-                        roomName: `Room ${room.roomNumber}`,
-                        roomNumber: room.roomNumber,
-                        floor: parseInt(room.roomNumber.charAt(0)) || 1,
-                        capacity: room.capacity,
-                        slotLabel: slot.label,
-                        slotStart: slot.startTime,
-                        slotEnd: slot.endTime
+                const room = rooms.find((r: any) => r.roomNumber === roomNumber);
+                const timeSlot = timeSlots[slot - 1];
+
+                if (!room) {
+                    responseText = `❌ Room ${roomNumber} not found. Please choose from: ${roomList}`;
+                } else if (!timeSlot) {
+                    responseText = `❌ Invalid time slot. Please choose from 1-8.`;
+                } else {
+                    const existingBooking = await Booking.findOne({
+                        roomId: room._id,
+                        slotId: timeSlot._id,
+                        dateString: date,
+                        status: "CONFIRMED"
+                    });
+
+                    if (existingBooking) {
+                        responseText = `❌ Room ${roomNumber} is already booked for ${timeSlot.label} on ${date}. Would you like to try a different time?`;
+                    } else {
+                        await Booking.create({
+                            userId: new mongoose.Types.ObjectId(),
+                            roomId: room._id,
+                            slotId: timeSlot._id,
+                            date: new Date(date),
+                            dateString: date,
+                            title,
+                            status: "CONFIRMED",
+                            snapshot: {
+                                roomName: `Room ${room.roomNumber}`,
+                                roomNumber: room.roomNumber,
+                                floor: parseInt(room.roomNumber.charAt(0)) || 1,
+                                capacity: room.capacity,
+                                slotLabel: timeSlot.label,
+                                slotStart: timeSlot.startTime,
+                                slotEnd: timeSlot.endTime
+                            }
+                        });
+
+                        responseText = `🎉 **Booking Confirmed!**
+
+| Detail | Info |
+|--------|------|
+| Room | ${roomNumber} |
+| Date | ${date} |
+| Time | ${timeSlot.label} |
+| Title | ${title} |`;
                     }
-                });
-
-                return {
-                    success: true,
-                    bookingId: booking._id.toString(),
-                    roomNumber: room.roomNumber,
-                    date,
-                    timeSlot: slot.label,
-                    title
-                };
+                }
+            } catch (parseError) {
+                console.error("Parse error:", parseError);
+                responseText = "I couldn't process that booking. Could you please provide the details again?";
             }
+        }
+
+        responseCache.set(cacheKey, { data: responseText, timestamp: Date.now() });
+        if (responseCache.size > 50) {
+            const firstKey = responseCache.keys().next().value;
+            if (firstKey) responseCache.delete(firstKey);
+        }
+
+        await step.run("save-assistant-message", async () => {
+            await Message.create({
+                content: responseText,
+                role: "assistant",
+                type: responseText.startsWith("❌") || responseText.startsWith("⏳") ? "ERROR" : "TEXT",
+                projectId: projectId ? new mongoose.Types.ObjectId(projectId) : undefined,
+            });
         });
-
-        const bookingAgent = createAgent({
-            name: "room-booking-assistant",
-            description: "Helps users book meeting rooms",
-            system: ROOM_BOOKING_PROMPT,
-            model: gemini({ model: "gemini-2.0-flash" }),
-            tools: [getRooms, getTimeSlots, checkAvailability, createBookingTool]
-        });
-
-        const network = createNetwork({
-            name: "room-booking-network",
-            agents: [bookingAgent],
-            maxIter: 5,
-            router: async ({ network }) => {
-                return bookingAgent;
-            }
-        });
-
-        const result = await network.run(message);
-
-        const responseText = typeof result === 'string' 
-            ? result 
-            : JSON.stringify(result);
 
         return {
-            success: true,
+            success: !responseText.startsWith("❌"),
             message: responseText,
             projectId
         };
