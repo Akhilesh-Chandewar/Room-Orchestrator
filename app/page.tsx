@@ -1,5 +1,6 @@
 import { Navbar } from "@/modules/home/components/Navbar";
 import { RoomView } from "@/modules/home/components/RoomView";
+import ChatPanel from "@/components/chat/ChatPanel";
 
 export default function Home() {
   return (
@@ -9,10 +10,8 @@ export default function Home() {
         <div className="w-1/2 p-4 overflow-auto">
           <RoomView />
         </div>
-        <div className="w-1/2 p-4">
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            Chat window (placeholder)
-          </div>
+        <div className="w-1/2 p-4 overflow-hidden">
+          <ChatPanel />
         </div>
       </main>
     </>
