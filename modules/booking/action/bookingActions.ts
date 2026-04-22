@@ -5,7 +5,6 @@ import connectToDatabase from "@/lib/database";
 import { Booking, IBookingSnapshot } from "../models/booking";
 import { Room } from "@/modules/room/models/room";
 import { TimeSlot } from "../models/timeSlot";
-import { User } from "@/modules/user/models/user";
 
 export async function getAvailableRooms() {
     await connectToDatabase();
@@ -49,15 +48,13 @@ export async function createBooking({
     slotId,
     date,
     title,
-    notes,
-    userEmail = "demo@user.com",
+    bookedBy = "Guest",
 }: {
     roomId: string;
     slotId: string;
     date: string;
     title: string;
-    notes?: string;
-    userEmail?: string;
+    bookedBy?: string;
 }) {
     await connectToDatabase();
 
@@ -84,14 +81,6 @@ export async function createBooking({
         throw new Error("This slot is already booked");
     }
 
-    let user = await User.findOne({ email: userEmail });
-    if (!user) {
-        user = await User.create({
-            name: "Demo User",
-            email: userEmail,
-        });
-    }
-
     const dateObj = new Date(date);
 
     const snapshot: IBookingSnapshot = {
@@ -105,13 +94,12 @@ export async function createBooking({
     };
 
     const booking = await Booking.create({
-        userId: user._id,
+        bookedBy,
         roomId: new mongoose.Types.ObjectId(roomId),
         slotId: new mongoose.Types.ObjectId(slotId),
         date: dateObj,
         dateString,
         title,
-        notes,
         status: "CONFIRMED",
         snapshot,
     });

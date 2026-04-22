@@ -2,19 +2,11 @@ import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/database";
 import { Message } from "@/modules/messages/models/message";
 
-export async function GET(request: Request) {
+export async function GET() {
     try {
-        const { searchParams } = new URL(request.url);
-        const projectId = searchParams.get("projectId");
-
         await connectToDatabase();
 
-        const query: any = {};
-        if (projectId) {
-            query.projectId = projectId;
-        }
-
-        const messages = await Message.find(query)
+        const messages = await Message.find({})
             .sort({ createdAt: 1 })
             .limit(50)
             .lean();

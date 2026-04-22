@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useCreateMessages } from "@/hooks/useCreateMessages";
+import { useRefresh } from "@/modules/home/context/RefreshContext";
 
 interface Message {
     _id: string;
@@ -17,12 +18,13 @@ interface Message {
     createdAt: string;
 }
 
-const ChatPanel = ({ projectId }: { projectId?: string }) => {
+const ChatPanel = () => {
     const [content, setContent] = useState("");
     const [isFocused, setIsFocused] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    const { mutateAsync, isPending, messages, loadMessages } = useCreateMessages(projectId);
+    const { mutateAsync, isPending, messages, loadMessages } = useCreateMessages();
+    const { triggerRefresh } = useRefresh();
 
     console.log("ChatPanel state:", { isPending, messagesCount: messages.length });
 
@@ -87,6 +89,9 @@ const ChatPanel = ({ projectId }: { projectId?: string }) => {
 
         try {
             await mutateAsync(currentContent);
+            if (currentContent.toLowerCase().includes("book")) {
+                setTimeout(() => triggerRefresh(), 1000);
+            }
         } catch (error: unknown) {
             const errorMsg = error instanceof Error ? error.message : "Failed to process request";
             toast.error(errorMsg);

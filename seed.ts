@@ -8,7 +8,7 @@ async function seed() {
 
     const rooms = Array.from({ length: 15 }, (_, i) => ({
         roomNumber: String(i + 1),
-        capacity: Math.floor(Math.random() * 20) + 5,
+        capacity: 2,
         isActive: true,
     }));
 

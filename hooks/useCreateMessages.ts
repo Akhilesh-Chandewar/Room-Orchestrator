@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 
 type MessageData = {
     _id: string;
@@ -15,36 +15,51 @@ type UseCreateMessagesReturn = {
     loadMessages: () => Promise<void>;
 };
 
-export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn => {
+export const useCreateMessages = (): UseCreateMessagesReturn => {
     const [isPending, setIsPending] = useState(false);
     const [messages, setMessages] = useState<MessageData[]>([]);
+    const baselineRef = useRef<string[]>([]);
 
     const loadMessages = useCallback(async () => {
         try {
-            const response = await fetch(`/api/messages${projectId ? `?projectId=${projectId}` : ""}`, {
+            const response = await fetch("/api/messages", {
                 method: "GET",
             });
             if (response.ok) {
                 const data = await response.json();
-                setMessages(data.messages || []);
+                const msgs: MessageData[] = data.messages || [];
+                setMessages(msgs);
+                baselineRef.current = msgs.map((m: MessageData) => m._id);
             }
         } catch (error) {
             console.error("Failed to load messages:", error);
         }
-    }, [projectId]);
+    }, []);
 
     const pollForResponse = useCallback(async () => {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 20; i++) {
             await new Promise(resolve => setTimeout(resolve, 2000));
-            await loadMessages();
-            const msgs = await (await fetch(`/api/messages${projectId ? `?projectId=${projectId}` : ""}`)).json();
-            if (msgs.messages && msgs.messages.length > messages.length) {
-                setMessages(msgs.messages);
-                return true;
+            
+            try {
+                const response = await fetch("/api/messages");
+                const data = await response.json();
+                const msgs: MessageData[] = data.messages || [];
+                
+                const baselineIds = baselineRef.current;
+                const newMessages = msgs.filter((m: MessageData) => !baselineIds.includes(m._id));
+                const hasNewAssistant = newMessages.some((m: MessageData) => m.role === "assistant");
+                
+                if (hasNewAssistant) {
+                    setMessages(msgs);
+                    baselineRef.current = msgs.map((m: MessageData) => m._id);
+                    return true;
+                }
+            } catch (err) {
+                console.error("Poll error:", err);
             }
         }
         return false;
-    }, [loadMessages, messages.length, projectId]);
+    }, []);
 
     const mutateAsync = useCallback(async (content: string) => {
         setIsPending(true);
@@ -63,8 +78,6 @@ export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn =
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     message: content,
-                    roomId: projectId || `room-${Date.now()}`,
-                    projectId: projectId || undefined,
                 }),
             });
 
@@ -101,7 +114,7 @@ export const useCreateMessages = (projectId?: string): UseCreateMessagesReturn =
         } finally {
             setIsPending(false);
         }
-    }, [projectId, pollForResponse]);
+    }, [pollForResponse]);
 
     return { mutateAsync, isPending, messages, loadMessages };
 };

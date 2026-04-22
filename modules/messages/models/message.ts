@@ -4,7 +4,6 @@ export interface IMessage extends Document {
     role: "user" | "assistant" | "system";
     content: string;
     type: "TEXT" | "RESULT" | "ERROR";
-    projectId?: mongoose.Types.ObjectId;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -20,22 +19,18 @@ const MessageSchema = new Schema<IMessage>(
             type: String,
             required: true,
         },
-        type: {
+type: {
             type: String,
             enum: ["TEXT", "RESULT", "ERROR"],
             default: "TEXT",
         },
-        projectId: {
-            type: Schema.Types.ObjectId,
-            ref: "Project",
-        },
     },
     {
-        timestamps: true,
+        timestamps: true
     }
 );
 
-MessageSchema.index({ projectId: 1, createdAt: -1 });
+MessageSchema.index({ createdAt: -1 });
 
 export const Message: Model<IMessage> =
     mongoose.models.Message ||

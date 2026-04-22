@@ -12,18 +12,14 @@ export interface IBookingSnapshot {
 
 export interface IBooking extends Document {
     _id: mongoose.Types.ObjectId;
-    userId: mongoose.Types.ObjectId;
+    bookedBy?: string;
     roomId: mongoose.Types.ObjectId;
     slotId: mongoose.Types.ObjectId;
-    date: Date;                         // stored as midnight UTC
-    dateString: string;                 // "2024-12-20" — for fast indexed queries
+    date: Date;
+    dateString: string;
     title: string;
-    notes?: string;
-    status: "CONFIRMED" | "CANCELLED" | "COMPLETED" | "NO_SHOW";
-    snapshot: IBookingSnapshot;         // denormalized at booking time
-    cancelledAt?: Date;
-    cancelledBy?: mongoose.Types.ObjectId;
-    cancellationReason?: string;
+    status: "CONFIRMED" | "CANCELLED";
+    snapshot: IBookingSnapshot;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -43,10 +39,9 @@ const BookingSnapshotSchema = new Schema<IBookingSnapshot>(
 
 const BookingSchema = new Schema<IBooking>(
     {
-        userId: {
-            type: Schema.Types.ObjectId,
-            ref: "User",
-            required: true,
+        bookedBy: {
+            type: String,
+            maxlength: 100,
         },
         roomId: {
             type: Schema.Types.ObjectId,
@@ -73,26 +68,15 @@ const BookingSchema = new Schema<IBooking>(
             trim: true,
             maxlength: 120,
         },
-        notes: {
-            type: String,
-            trim: true,
-            maxlength: 500,
-        },
         status: {
             type: String,
-            enum: ["CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"],
+            enum: ["CONFIRMED", "CANCELLED"],
             default: "CONFIRMED",
         },
         snapshot: {
             type: BookingSnapshotSchema,
             required: true,
         },
-        cancelledAt: Date,
-        cancelledBy: {
-            type: Schema.Types.ObjectId,
-            ref: "User",
-        },
-        cancellationReason: String,
     },
     {
         timestamps: true,

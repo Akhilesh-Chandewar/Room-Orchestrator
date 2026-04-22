@@ -27,6 +27,10 @@ mongoose.connection.on('disconnected', () => {
     console.log('Mongoose disconnected');
 });
 
+mongoose.connection.on('open', () => {
+    console.log('Mongoose connection open');
+});
+
 export default async function connectToDatabase() {
     if (cached.conn) {
         return cached.conn;
