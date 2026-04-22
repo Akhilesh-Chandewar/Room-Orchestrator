@@ -13,10 +13,16 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
     const [refreshFn, setRefreshFn] = useState<RefreshFn | null>(null);
 
     const triggerRefresh = useCallback(() => {
-        if (refreshFn) refreshFn();
+        console.log("triggerRefresh called, has fn:", !!refreshFn);
+        if (refreshFn) {
+            refreshFn();
+        } else {
+            console.log("No refresh function registered!");
+        }
     }, [refreshFn]);
 
     const registerRefresh = useCallback((fn: RefreshFn) => {
+        console.log("registerRefresh called");
         setRefreshFn(() => fn);
     }, []);
 

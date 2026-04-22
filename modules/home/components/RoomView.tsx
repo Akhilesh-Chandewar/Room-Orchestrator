@@ -5,19 +5,14 @@ import { getAllRooms } from "@/modules/room/action";
 import { getBookings } from "@/modules/booking/action/getBookings";
 import { getTimeSlots } from "@/modules/booking/action/getTimeSlots";
 import { useRefresh } from "@/modules/home/context/RefreshContext";
+import { getCurrentDateString } from "@/lib/dateUtils";
 
 export const RoomView = () => {
     const [rooms, setRooms] = useState<any[]>([]);
     const [bookings, setBookings] = useState<any[]>([]);
     const [timeSlots, setTimeSlots] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [selectedDate, setSelectedDate] = useState(() => {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, "0");
-        const day = String(now.getDate()).padStart(2, "0");
-        return `${year}-${month}-${day}`;
-    });
+    const [selectedDate, setSelectedDate] = useState(getCurrentDateString);
     
     const { registerRefresh } = useRefresh();
 

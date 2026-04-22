@@ -10,12 +10,15 @@ export async function POST(request: Request) {
 
         await connectToDatabase();
 
-        const userMsg = await Message.create({
+        try {
+        await Message.create({
             content: message,
             role: "user",
             type: "TEXT",
         });
-        console.log("User message saved:", userMsg._id);
+    } catch (err) {
+        console.log("Failed to save user message:", err);
+    }
 
         const eventResult = await inngest.send({
             name: "app/room.created",

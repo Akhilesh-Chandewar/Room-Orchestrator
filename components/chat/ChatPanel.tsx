@@ -21,6 +21,7 @@ interface Message {
 const ChatPanel = () => {
     const [content, setContent] = useState("");
     const [isFocused, setIsFocused] = useState(false);
+    const [isHydrated, setIsHydrated] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const { mutateAsync, isPending, messages, loadMessages } = useCreateMessages();
@@ -31,6 +32,10 @@ const ChatPanel = () => {
     useEffect(() => {
         loadMessages();
     }, [loadMessages]);
+
+    useEffect(() => {
+        setIsHydrated(true);
+    }, []);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -108,35 +113,39 @@ const ChatPanel = () => {
     return (
         <div className="flex flex-col h-full">
             <div className="flex-1 overflow-y-auto space-y-4 p-4">
-                {messages.length === 0 && !isPending && (
+                {!isHydrated ? (
+                    <div className="text-center text-muted-foreground py-8">
+                        <p className="text-sm">Loading...</p>
+                    </div>
+                ) : messages.length === 0 && !isPending ? (
                     <div className="text-center text-muted-foreground py-8">
                         <p className="text-sm">👋 Hi! I can help you book a meeting room.</p>
-                        <p className="text-xs mt-2">Try: "Book room 101 tomorrow at 2pm"</p>
+                        <p className="text-xs mt-2">Try: "Book room 101 at 2pm"</p>
                     </div>
-                )}
-                
-                {messages.map((msg) => (
-                    <div
-                        key={msg._id || msg.createdAt}
-                        className={cn(
-                            "flex",
-                            msg.role === "user" ? "justify-end" : "justify-start"
-                        )}
-                    >
+                ) : (
+                    messages.map((msg) => (
                         <div
+                            key={msg._id || msg.createdAt}
                             className={cn(
-                                "max-w-[85%] rounded-lg px-4 py-3 text-sm whitespace-pre-wrap",
-                                msg.role === "user"
-                                    ? "bg-primary text-primary-foreground"
-                                    : isError(msg)
-                                        ? "bg-red-50 border border-red-200"
-                                        : "bg-muted"
+                                "flex",
+                                msg.role === "user" ? "justify-end" : "justify-start"
                             )}
                         >
-                            {renderMessage(msg)}
+                            <div
+                                className={cn(
+                                    "max-w-[85%] rounded-lg px-4 py-3 text-sm whitespace-pre-wrap",
+                                    msg.role === "user"
+                                        ? "bg-primary text-primary-foreground"
+                                        : isError(msg)
+                                            ? "bg-red-50 border border-red-200"
+                                            : "bg-muted"
+                                )}
+                            >
+                                {renderMessage(msg)}
+                            </div>
                         </div>
-                    </div>
-                ))}
+                    ))
+                )}
                 
                 {isPending && (
                     <div className="flex justify-start">

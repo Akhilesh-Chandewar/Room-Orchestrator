@@ -2,25 +2,20 @@
 
 import connectToDatabase from "@/lib/database";
 import { Booking } from "../models/booking";
-
-function getCurrentDateString(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-}
+import { getCurrentDateString } from "@/lib/dateUtils";
 
 export async function getBookings(dateString?: string) {
     await connectToDatabase();
     const targetDate = dateString || getCurrentDateString();
-    console.log("Fetching bookings for:", targetDate);
     
-    const query: any = { status: "CONFIRMED", dateString: targetDate };
+    const query: any = { status: "CONFIRMED" };
     
-    const bookings = await Booking.find(query).sort({ date: 1, slotId: 1 });
-    console.log("Found bookings:", bookings.length);
-    return JSON.parse(JSON.stringify(bookings));
+    const allBookings = await Booking.find(query).lean();
+    const filtered = allBookings.filter((b: any) => b.dateString === targetDate);
+    
+    console.log("getBookings:", { targetDate, total: allBookings.length, filtered: filtered.length });
+    
+    return JSON.parse(JSON.stringify(filtered));
 }
 
 export async function getTodayBookings() {

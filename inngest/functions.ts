@@ -7,42 +7,52 @@ import { TimeSlot } from "@/modules/booking/models/timeSlot";
 import { Booking } from "@/modules/booking/models/booking";
 import { Message } from "@/modules/messages/models/message";
 import { getFreeModels } from "@/lib/openrouter";
-
-const responseCache = new Map<string, { data: string; timestamp: number }>();
-const CACHE_TTL = 5 * 60 * 1000;
-
-function getCurrentDateString(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-}
+import { getCurrentDateString } from "@/lib/dateUtils";
 
 const openrouter = new OpenAI({
+    apiKey: process.env.OPENROUTER_API_KEY,
     baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.OPENROUTER_API_KEY || "",
 });
 
-const SYSTEM_PROMPT = `You are a friendly room booking assistant.
+const SYSTEM_PROMPT = `You are a helpful meeting room management assistant. You have access to all room and booking data. Answer questions naturally and help users with their needs.
+
+You have access to:
+- Room list with capacities
+- Today's time slots (14 slots, 9 AM to 10 PM)
+- Today's bookings (who booked what, when, where)
+
+You can answer questions like:
+- "How many rooms are available?" → Count rooms not booked
+- "Which rooms are free at 2 PM?" → Check which room isn't booked at that slot
+- "How many slots available for room 101?" → Count free slots for that room
+- "Show me all bookings" → List today's bookings
+- "What rooms have capacity > 10?" → Filter rooms by capacity
+- Normal conversation like "Hello", "Thanks", etc.
 
 RULES:
-1. Extract: room number, date (MUST BE TODAY = ${getCurrentDateString()}), slot (1-14), title
-2. Ask ONE question if missing info
-3. ONLY allow bookings for TODAY (${getCurrentDateString()}) - reject any other date
-4. Cannot book slots in the past - reject them
-5. Check if room/slot is already booked before confirming
-6. When ready respond ONLY in JSON:
+1. For booking requests, respond ONLY in JSON:
+   {"action": "book", "roomNumber": "XXX", "slot": N, "title": "Meeting title", "bookedBy": "Name"}
 
-{
-  "roomNumber": "XXX",
-  "date": "YYYY-MM-DD",
-  "slot": N,
-  "title": "Meeting title",
-  "bookedBy": "Name"
-}
+2. For questions about availability, analyze the data and answer clearly
 
-Otherwise respond normally.`;
+3. For past slot booking attempts, say: "❌ Cannot book a time slot in the past."
+
+4. For room already booked, say: "❌ Room X is already booked at that time."
+
+5. For general conversation, respond naturally without JSON
+
+EXAMPLES:
+- User: "book room 101 slot 3 for team meeting by John"
+  Response: {"action": "book", "roomNumber": "101", "slot": 3, "title": "team meeting", "bookedBy": "John"}
+
+- User: "How many rooms are free at 2 PM?"
+  Response: "At 2 PM, X rooms are available. Available rooms: Room 101, Room 102..."
+
+- User: "Hello"
+  Response: "Hello! How can I help you book a room today?"
+
+- User: "Thanks"
+  Response: "You're welcome! Let me know if you need anything else."`;
 
 function isQuotaError(error: unknown): boolean {
     return JSON.stringify(error).includes("429");
@@ -67,10 +77,10 @@ async function retryWithBackoff<T>(
     throw err;
 }
 
-async function callLLM(messages: any[]) {
+async function callLLM(messages: any[]): Promise<string> {
     const models = await getFreeModels();
 
-    let lastError;
+    let lastError: unknown;
 
     for (const model of models) {
         try {
@@ -109,41 +119,49 @@ export const roomOrchestrator = inngest.createFunction(
 
         const { message: userMessage } = event.data;
 
-        const cacheKey = JSON.stringify({ userMessage });
-        const cached = responseCache.get(cacheKey);
-
-        if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-            return { success: true, message: cached.data };
-        }
-
-        const history = await step.run("history", async () => {
-            const msgs = await Message.find()
-                .sort({ createdAt: -1 })
-                .limit(6)
-                .lean();
-
-            return msgs.reverse();
+        const rooms = await step.run("rooms", async () => {
+            return await Room.find({ isActive: true }).lean();
         });
 
-        const rooms = await Room.find({ isActive: true });
-        const slots = await TimeSlot.find({ isActive: true });
+        const slots = await step.run("slots", async () => {
+            return await TimeSlot.find().sort({ startTime: 1 }).lean();
+        });
 
-        const roomList = rooms.map((r: any) => r.roomNumber).join(", ");
-        const slotList = slots.map((s: any, i: number) => `${i + 1}:${s.label}`).join(", ");
+        const today = getCurrentDateString();
+        const bookings: any[] = await step.run("bookings", async () => {
+            return await Booking.find({ dateString: today, status: "CONFIRMED" })
+                .populate("roomId", "roomNumber capacity")
+                .populate("slotId", "label startTime endTime")
+                .lean();
+        });
 
-        const messages = [
+        const roomList = rooms
+            .map((r: any) => `Room ${r.roomNumber} (capacity: ${r.capacity})`)
+            .join("\n");
+
+        const slotList = slots
+            .map((s: any, i: number) => `${i + 1}. ${s.label} (${s.startTime}-${s.endTime})`)
+            .join("\n");
+
+        const bookingList = bookings
+            .map((b: any) => `${b.snapshot?.roomName || b.roomId?.roomNumber} - ${b.snapshot?.slotLabel || b.slotId?.label} - ${b.title} (${b.bookedBy})`)
+            .join("\n") || "No bookings today";
+
+        const messages: any[] = [
             { role: "system", content: SYSTEM_PROMPT },
-
-            ...history.map((m: any) => ({
-                role: m.role,
-                content: m.content,
-            })),
 
             {
                 role: "user",
-                content: `Rooms: ${roomList}
-Slots: ${slotList}
-User: ${userMessage}`,
+                content: `AVAILABLE ROOMS (${rooms.length} total):
+${roomList}
+
+TIME SLOTS:
+${slotList}
+
+TODAY'S BOOKINGS (${bookings.length}):
+${bookingList}
+
+USER: ${userMessage}`,
             },
         ];
 
@@ -164,69 +182,68 @@ User: ${userMessage}`,
             bookingData = JSON.parse(responseText);
         } catch { }
 
-        if (bookingData?.roomNumber) {
-            const { roomNumber, date, slot, title, bookedBy } = bookingData;
-
+        if (bookingData?.action === "book" && bookingData?.roomNumber) {
+            const { roomNumber, slot, title, bookedBy } = bookingData;
             const today = getCurrentDateString();
-            if (date !== today) {
-                responseText = `❌ Bookings are only allowed for today (${today}). Please try again with today's date.`;
-            } else {
-                const room = rooms.find((r: any) => r.roomNumber === roomNumber);
-                const slotIndex = slot > 0 ? slot - 1 : 0;
-                const timeSlot = slots[slotIndex];
+            console.log("Booking attempt:", { roomNumber, slot, title, bookedBy, today });
 
-if (!room || !timeSlot) {
+            const room: any = rooms.find((r: any) => r.roomNumber === roomNumber);
+            const slotIndex = slot > 0 ? slot - 1 : 0;
+            const timeSlot: any = slots[slotIndex];
+            console.log("Room found:", room?._id, "TimeSlot found:", timeSlot?._id);
+
+            if (!room || !timeSlot) {
+                console.log("Invalid room or slot");
                 responseText = "❌ Invalid room or slot.";
             } else {
                 const now = new Date();
                 const bookingDate = new Date(today);
                 const [hours, mins] = timeSlot.startTime.split(":").map(Number);
                 bookingDate.setHours(hours, mins, 0, 0);
+                console.log("Booking date:", bookingDate, "Now:", now, "Is past:", bookingDate < now);
 
                 if (bookingDate < now) {
-                        responseText = "❌ Cannot book a time slot in the past.";
+                    console.log("Slot is in the past");
+                    responseText = "❌ Cannot book a time slot in the past.";
+                } else {
+                    const exists = await Booking.findOne({
+                        roomId: room._id,
+                        slotId: timeSlot._id,
+                        dateString: today,
+                        status: "CONFIRMED",
+                    });
+
+                    if (exists) {
+                        console.log("Slot already booked");
+                        const bookedInfo = exists.snapshot;
+                        responseText = `❌ Room ${roomNumber} on ${today} (${timeSlot.label}) is already booked by ${bookedInfo?.roomName || "someone else"}.`;
                     } else {
-                        const exists = await Booking.findOne({
+                        console.log("Creating booking for:", { roomNumber, date: today, slot: timeSlot.label });
+                        await Booking.create({
+                            bookedBy: bookedBy || "Guest",
                             roomId: room._id,
                             slotId: timeSlot._id,
-                            dateString: date,
+                            date: new Date(today),
+                            dateString: today,
+                            title,
                             status: "CONFIRMED",
+                            snapshot: {
+                                roomName: `Room ${roomNumber}`,
+                                roomNumber: roomNumber,
+                                floor: parseInt(roomNumber.charAt(0)) || 1,
+                                capacity: room.capacity,
+                                slotLabel: timeSlot.label,
+                                slotStart: timeSlot.startTime,
+                                slotEnd: timeSlot.endTime,
+                            },
                         });
+                        console.log("Booking created successfully");
 
-                        if (exists) {
-                            const bookedInfo = exists.snapshot;
-                            responseText = `❌ Room ${roomNumber} on ${date} (${timeSlot.label}) is already booked by ${bookedInfo?.roomName || "someone else"}.`;
-                        } else {
-                            await Booking.create({
-                                bookedBy: bookedBy || "Guest",
-                                roomId: room._id,
-                                slotId: timeSlot._id,
-                                date: new Date(date),
-                                dateString: date,
-                                title,
-                                status: "CONFIRMED",
-                                snapshot: {
-                                    roomName: `Room ${roomNumber}`,
-                                    roomNumber: roomNumber,
-                                    floor: parseInt(roomNumber.charAt(0)) || 1,
-                                    capacity: room.capacity,
-                                    slotLabel: timeSlot.label,
-                                    slotStart: timeSlot.startTime,
-                                    slotEnd: timeSlot.endTime,
-                                },
-                            });
-
-                            responseText = `✅ Booked Room ${roomNumber} on ${date} for ${bookedBy || "Guest"}\n📅 ${timeSlot.label}\n👥 Capacity: ${room.capacity}\n📋 Title: ${title}`;
-                        }
+                        responseText = `✅ Booked Room ${roomNumber} on ${today} for ${bookedBy || "Guest"}\n📅 ${timeSlot.label}\n👥 Capacity: ${room.capacity}\n📋 Title: ${title}`;
                     }
                 }
             }
         }
-
-        responseCache.set(cacheKey, {
-            data: responseText,
-            timestamp: Date.now(),
-        });
 
         await step.run("save-ai", async () => {
             try {
